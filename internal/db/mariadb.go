@@ -32,7 +32,7 @@ func Initialize(cfg *config.Config) (*gorm.DB, error) {
 	}
 
 	// Safely auto-migrate strictly scaling schemas dynamically gracefully
-	if err := database.AutoMigrate(&models.Workflow{}, &models.AvailableNode{}); err != nil {
+	if err := database.AutoMigrate(&models.Workflow{}, &models.AvailableNode{}, &models.Agent{}); err != nil {
 		log.Printf("Warning: Failed to auto-migrate schemas: %v", err)
 	}
 

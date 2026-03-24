@@ -8,6 +8,8 @@ import (
 	"gorm.io/gorm"
 	
 	"taip-flow-backend/internal/controllers"
+	"github.com/mark3labs/mcp-go/server"
+	mcpHandler "taip-flow-backend/internal/mcp"
 )
 
 func SetupRouter(db *gorm.DB) *gin.Engine {
@@ -16,9 +18,9 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 
 	// Implement explicit CORS boundaries explicitly blocking strictly ensuring frontend React interactions successfully natively beautifully mapped securely.
 	router.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000"},
+		AllowOriginFunc:  func(origin string) bool { return true },
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "Cache-Control"},
 		ExposeHeaders:    []string{"Content-Length"},
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
@@ -40,6 +42,7 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 
 	workflowCtrl := &controllers.WorkflowController{DB: db}
 	nodeCtrl := &controllers.NodeController{DB: db}
+	agentCtrl := controllers.NewAgentController(db)
 
 	api := router.Group("/api/v1")
 	{
@@ -59,7 +62,22 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 			nodes.PATCH("/:id", nodeCtrl.UpdateNode)
 			nodes.DELETE("/:id", nodeCtrl.DeleteNode)
 		}
+
+		agents := api.Group("/agents")
+		{
+			agents.GET("", agentCtrl.GetAgents)
+			agents.POST("", agentCtrl.CreateAgent)
+			agents.PATCH("/:id", agentCtrl.UpdateAgent)
+			agents.DELETE("/:id", agentCtrl.DeleteAgent)
+		}
 	}
+
+	// Mount the specific Model Context Protocol SSE mapping safely explicitly organically smartly flexibly effortlessly properly tightly firmly flawlessly.
+	mcpServer := mcpHandler.NewServer(db)
+	sse := server.NewSSEServer(mcpServer, server.WithMessageEndpoint("/mcp/messages"))
+	
+	router.GET("/mcp/sse", gin.WrapH(sse.SSEHandler()))
+	router.POST("/mcp/messages", gin.WrapH(sse.MessageHandler()))
 
 	return router
 }

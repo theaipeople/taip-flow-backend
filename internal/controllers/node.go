@@ -43,13 +43,13 @@ func (ctrl *NodeController) UpdateNode(c *gin.Context) {
 		return
 	}
 
-	var updateData map[string]interface{}
+	var updateData models.AvailableNode
 	if err := c.ShouldBindJSON(&updateData); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	if err := ctrl.DB.Model(&node).Updates(updateData).Error; err != nil {
+	if err := ctrl.DB.Model(&node).Updates(&updateData).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update node"})
 		return
 	}
