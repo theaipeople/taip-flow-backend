@@ -15,7 +15,7 @@ func main() {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 
-	router := server.SetupRouter(database)
+	router := server.SetupRouter(database, cfg)
 
 	log.Printf("Starting server on port %s...", cfg.ServerPort)
 	if err := router.Run(":" + cfg.ServerPort); err != nil {

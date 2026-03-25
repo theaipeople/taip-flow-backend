@@ -6,17 +6,18 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
-	
+
+	"taip-flow-backend/internal/auth"
+	"taip-flow-backend/internal/config"
 	"taip-flow-backend/internal/controllers"
-	"github.com/mark3labs/mcp-go/server"
 	mcpHandler "taip-flow-backend/internal/mcp"
+
+	"github.com/mark3labs/mcp-go/server"
 )
 
-func SetupRouter(db *gorm.DB) *gin.Engine {
-	// Gin default configures standard Recovery and structured Logger middlewares instantly cleanly mapping explicit properties natively.
+func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	router := gin.Default()
 
-	// Implement explicit CORS boundaries explicitly blocking strictly ensuring frontend React interactions successfully natively beautifully mapped securely.
 	router.Use(cors.New(cors.Config{
 		AllowOriginFunc:  func(origin string) bool { return true },
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
@@ -26,25 +27,40 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 		MaxAge:           12 * time.Hour,
 	}))
 
-	// Initial Generic Health Ping
 	router.GET("/ping", func(c *gin.Context) {
 		sqlDB, err := db.DB()
 		if err != nil || sqlDB.Ping() != nil {
 			c.JSON(500, gin.H{"status": "Database Unreachable"})
 			return
 		}
-
-		c.JSON(200, gin.H{
-			"message": "pong",
-			"status":  "Strict Highly Scalable Service API Linked cleanly against MariaDB flawlessly sequentially natively",
-		})
+		c.JSON(200, gin.H{"message": "pong"})
 	})
 
+	// ── Auth (public) ───────────────────────────────────────────────────────
+	authSvc := auth.NewService(db, cfg)
+	authCtrl := controllers.NewAuthController(authSvc, cfg)
+
+	authGroup := router.Group("/auth")
+	{
+		authGroup.POST("/register", authCtrl.Register)
+		authGroup.POST("/login", authCtrl.Login)
+		authGroup.POST("/logout", authCtrl.Logout)
+		authGroup.POST("/refresh", authCtrl.Refresh)
+
+		// Protected — needs valid access token
+		authGroup.GET("/me", auth.RequireAuth(authSvc), authCtrl.Me)
+
+		// Google OAuth2 stubs — wire up when ready
+		authGroup.GET("/google", authCtrl.GoogleLogin)
+		authGroup.GET("/google/callback", authCtrl.GoogleCallback)
+	}
+
+	// ── API (protected) ─────────────────────────────────────────────────────
 	workflowCtrl := &controllers.WorkflowController{DB: db}
 	nodeCtrl := &controllers.NodeController{DB: db}
 	agentCtrl := controllers.NewAgentController(db)
 
-	api := router.Group("/api/v1")
+	api := router.Group("/api/v1", auth.RequireAuth(authSvc))
 	{
 		workflows := api.Group("/workflows")
 		{
@@ -74,10 +90,9 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 		}
 	}
 
-	// Mount the specific Model Context Protocol SSE mapping safely explicitly organically smartly flexibly effortlessly properly tightly firmly flawlessly.
+	// ── MCP (internal — protected by network, not auth) ─────────────────────
 	mcpServer := mcpHandler.NewServer(db)
 	sse := server.NewSSEServer(mcpServer, server.WithMessageEndpoint("/mcp/messages"))
-	
 	router.GET("/mcp/sse", gin.WrapH(sse.SSEHandler()))
 	router.POST("/mcp/messages", gin.WrapH(sse.MessageHandler()))
 
