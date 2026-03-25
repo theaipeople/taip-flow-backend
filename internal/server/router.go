@@ -51,6 +51,7 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 			workflows.GET("", workflowCtrl.GetWorkflows)
 			workflows.GET("/:id", workflowCtrl.GetWorkflow)
 			workflows.POST("", workflowCtrl.CreateWorkflow)
+			workflows.POST("/bulk-delete", workflowCtrl.BulkDeleteWorkflows)
 			workflows.PATCH("/:id", workflowCtrl.UpdateWorkflow)
 			workflows.DELETE("/:id", workflowCtrl.DeleteWorkflow)
 		}
@@ -59,6 +60,7 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 		{
 			nodes.GET("", nodeCtrl.GetNodes)
 			nodes.POST("", nodeCtrl.CreateNode)
+			nodes.POST("/bulk-delete", nodeCtrl.BulkDeleteNodes)
 			nodes.PATCH("/:id", nodeCtrl.UpdateNode)
 			nodes.DELETE("/:id", nodeCtrl.DeleteNode)
 		}

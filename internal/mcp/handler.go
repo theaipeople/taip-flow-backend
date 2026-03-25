@@ -16,13 +16,20 @@ import (
 	"taip-flow-backend/internal/models"
 )
 
-// buildTopology constructs a ReactFlow topology from an ordered node list.
+// NodeSpec describes one node in the ordered list passed to buildTopology.
+type NodeSpec struct {
+	Node         models.AvailableNode
+	Task         string   // task description shown inside the node
+	BranchLabels []string // labels for each outgoing branch edge (len must equal Links)
+}
+
+// buildTopology constructs a ReactFlow topology from an ordered NodeSpec list.
 // Each node's Links field controls outgoing edges:
 //
 //	links=1 → linear to next node
-//	links=2 → branches to next 2 nodes (with vertical offset)
+//	links=2 → branches to next 2 nodes (with vertical offset + meaningful labels)
 //	links=0 → terminal, no outgoing edges
-func buildTopology(nodes []models.AvailableNode) ([]byte, error) {
+func buildTopology(specs []NodeSpec) ([]byte, error) {
 	type nodeShape struct {
 		ID       string                 `json:"id"`
 		Type     string                 `json:"type"`
@@ -30,21 +37,25 @@ func buildTopology(nodes []models.AvailableNode) ([]byte, error) {
 		Data     map[string]interface{} `json:"data"`
 	}
 	type edgeShape struct {
-		ID     string `json:"id"`
-		Source string `json:"source"`
-		Target string `json:"target"`
-		Label  string `json:"label,omitempty"`
+		ID             string                 `json:"id"`
+		Source         string                 `json:"source"`
+		Target         string                 `json:"target"`
+		Label          string                 `json:"label,omitempty"`
+		LabelStyle     map[string]interface{} `json:"labelStyle,omitempty"`
+		LabelBgStyle   map[string]interface{} `json:"labelBgStyle,omitempty"`
+		LabelBgPadding []int                  `json:"labelBgPadding,omitempty"`
 	}
 
-	rfNodes := make([]nodeShape, len(nodes))
+	rfNodes := make([]nodeShape, len(specs))
 	var rfEdges []edgeShape
 	edgeIdx := 1
-	yPositions := make([]int, len(nodes))
+	yPositions := make([]int, len(specs))
 	for i := range yPositions {
 		yPositions[i] = 100
 	}
 
-	for i, n := range nodes {
+	for i, spec := range specs {
+		n := spec.Node
 		nid := fmt.Sprintf("n%d", i+1)
 
 		appearance := map[string]interface{}{
@@ -69,8 +80,10 @@ func buildTopology(nodes []models.AvailableNode) ([]byte, error) {
 				"instanceName": n.Name,
 				"nodeId":       n.ID,
 				"category":     n.Category,
+				"task":         spec.Task,
 				"priority":     i + 1,
 				"maxLinks":     n.Links,
+				"links":        n.Links,
 				"appearance":   appearance,
 				"linksConfig": map[string]interface{}{
 					"type": "smoothstep", "animated": true, "color": "#000000", "width": 2,
@@ -83,7 +96,15 @@ func buildTopology(nodes []models.AvailableNode) ([]byte, error) {
 		if links <= 0 {
 			continue
 		}
-		if links == 1 && i+1 < len(nodes) {
+
+		labelStyle := map[string]interface{}{
+			"fontSize": 10, "fontWeight": 600, "fill": "#374151",
+		}
+		labelBgStyle := map[string]interface{}{
+			"fill": "#f9fafb", "fillOpacity": 0.9, "stroke": "#e5e7eb", "strokeWidth": 1,
+		}
+
+		if links == 1 && i+1 < len(specs) {
 			rfEdges = append(rfEdges, edgeShape{
 				ID:     fmt.Sprintf("e%d", edgeIdx),
 				Source: nid,
@@ -91,14 +112,24 @@ func buildTopology(nodes []models.AvailableNode) ([]byte, error) {
 			})
 			edgeIdx++
 		} else {
-			for b := 0; b < links && i+1+b < len(nodes); b++ {
+			for b := 0; b < links && i+1+b < len(specs); b++ {
 				targetIdx := i + 1 + b
 				yPositions[targetIdx] = 100 + b*180
+
+				// Use provided branch label or fall back to generic
+				label := fmt.Sprintf("Branch %d", b+1)
+				if b < len(spec.BranchLabels) && spec.BranchLabels[b] != "" {
+					label = spec.BranchLabels[b]
+				}
+
 				rfEdges = append(rfEdges, edgeShape{
-					ID:     fmt.Sprintf("e%d", edgeIdx),
-					Source: nid,
-					Target: fmt.Sprintf("n%d", targetIdx+1),
-					Label:  fmt.Sprintf("Branch %d", b+1),
+					ID:             fmt.Sprintf("e%d", edgeIdx),
+					Source:         nid,
+					Target:         fmt.Sprintf("n%d", targetIdx+1),
+					Label:          label,
+					LabelStyle:     labelStyle,
+					LabelBgStyle:   labelBgStyle,
+					LabelBgPadding: []int{4, 2},
 				})
 				edgeIdx++
 			}
@@ -146,6 +177,12 @@ func NewServer(db *gorm.DB) *server.MCPServer {
 				result += fmt.Sprintf("- id:%s | name:%s | category:%s | links:%d\n",
 					n.ID, n.Name, n.Category, n.Links)
 			}
+			// Cap response to avoid blowing up LLM context window
+			if len(result) > 4000 {
+				lines := strings.Split(result, "\n")
+				truncated := strings.Join(lines[:60], "\n")
+				result = truncated + fmt.Sprintf("\n... (%d more nodes not shown — use query param to filter)", len(nodes)-60)
+			}
 			return mcp.NewToolResultText(result), nil
 		},
 	)
@@ -162,7 +199,7 @@ func NewServer(db *gorm.DB) *server.MCPServer {
 				mcp.Required(),
 				mcp.Description("Group category: communication, condition, data, or trigger"),
 			),
-			mcp.WithNumber("links",
+			mcp.WithString("links",
 				mcp.Description("Outgoing branches: 1=linear (default), 2=binary branch, 0=terminal"),
 			),
 		),
@@ -176,8 +213,12 @@ func NewServer(db *gorm.DB) *server.MCPServer {
 			}
 
 			links := 1
-			if v, ok := args["links"].(float64); ok {
+			// Accept both number (float64) and string for links
+			switch v := args["links"].(type) {
+			case float64:
 				links = int(v)
+			case string:
+				fmt.Sscanf(v, "%d", &links)
 			}
 
 			appearance, _ := json.Marshal(map[string]interface{}{
@@ -210,7 +251,7 @@ func NewServer(db *gorm.DB) *server.MCPServer {
 	// ── Tool 3: create_workflow ─────────────────────────────────────────────────
 	s.AddTool(
 		mcp.NewTool("create_workflow",
-			mcp.WithDescription("Create a workflow from an ordered list of node IDs. Call list_nodes first to get IDs, create_node for any missing ones. The backend builds branching edges from each node's links count automatically."),
+			mcp.WithDescription("Create a workflow from ordered node IDs. Call list_nodes first, create_node for missing ones. The backend builds branching edges from each node's links count automatically."),
 			mcp.WithString("name",
 				mcp.Required(),
 				mcp.Description("Workflow name"),
@@ -218,6 +259,12 @@ func NewServer(db *gorm.DB) *server.MCPServer {
 			mcp.WithString("node_ids",
 				mcp.Required(),
 				mcp.Description("Comma-separated node IDs in order, e.g. 'uuid1,uuid2,uuid3'"),
+			),
+			mcp.WithString("node_tasks",
+				mcp.Description("Pipe-separated task descriptions for each node in the same order as node_ids, e.g. 'Collect patient info|Check vitals|Diagnose'. Use empty string for nodes with no task."),
+			),
+			mcp.WithString("branch_labels",
+				mcp.Description("Semicolon-separated groups of pipe-separated branch labels for branching nodes. One group per node in node_ids order. Use empty string for non-branching nodes. e.g. '||Approved|Rejected||' means node 3 has branches 'Approved' and 'Rejected'."),
 			),
 			mcp.WithString("status",
 				mcp.Description("Draft or Active. Defaults to Draft"),
@@ -227,6 +274,8 @@ func NewServer(db *gorm.DB) *server.MCPServer {
 			args, _ := req.Params.Arguments.(map[string]interface{})
 			name, _ := args["name"].(string)
 			nodeIDsStr, _ := args["node_ids"].(string)
+			nodeTasksStr, _ := args["node_tasks"].(string)
+			branchLabelsStr, _ := args["branch_labels"].(string)
 			status, _ := args["status"].(string)
 
 			if name == "" {
@@ -239,9 +288,28 @@ func NewServer(db *gorm.DB) *server.MCPServer {
 				status = "Draft"
 			}
 
+			// Parse node tasks (pipe-separated)
+			var nodeTasks []string
+			if nodeTasksStr != "" {
+				nodeTasks = strings.Split(nodeTasksStr, "|")
+			}
+
+			// Parse branch labels (semicolon-separated groups, each group pipe-separated)
+			var branchLabelGroups [][]string
+			if branchLabelsStr != "" {
+				for _, group := range strings.Split(branchLabelsStr, ";") {
+					if group == "" {
+						branchLabelGroups = append(branchLabelGroups, nil)
+					} else {
+						branchLabelGroups = append(branchLabelGroups, strings.Split(group, "|"))
+					}
+				}
+			}
+
+			// Resolve each node ID from DB
 			rawIDs := strings.Split(nodeIDsStr, ",")
-			resolvedNodes := make([]models.AvailableNode, 0, len(rawIDs))
-			for _, raw := range rawIDs {
+			specs := make([]NodeSpec, 0, len(rawIDs))
+			for i, raw := range rawIDs {
 				id := strings.TrimSpace(raw)
 				if id == "" {
 					continue
@@ -252,13 +320,20 @@ func NewServer(db *gorm.DB) *server.MCPServer {
 						"Node '%s' not found. Call list_nodes or create_node first.", id,
 					)), nil
 				}
-				resolvedNodes = append(resolvedNodes, node)
+				spec := NodeSpec{Node: node}
+				if i < len(nodeTasks) {
+					spec.Task = strings.TrimSpace(nodeTasks[i])
+				}
+				if i < len(branchLabelGroups) {
+					spec.BranchLabels = branchLabelGroups[i]
+				}
+				specs = append(specs, spec)
 			}
-			if len(resolvedNodes) == 0 {
+			if len(specs) == 0 {
 				return mcp.NewToolResultError("No valid node IDs provided"), nil
 			}
 
-			topologyBytes, err := buildTopology(resolvedNodes)
+			topologyBytes, err := buildTopology(specs)
 			if err != nil {
 				return mcp.NewToolResultError(fmt.Sprintf("Failed to build topology: %v", err)), nil
 			}
@@ -267,7 +342,7 @@ func NewServer(db *gorm.DB) *server.MCPServer {
 				ID:         uuid.New().String(),
 				Name:       name,
 				Status:     status,
-				NodesCount: len(resolvedNodes),
+				NodesCount: len(specs),
 				Topology:   datatypes.JSON(topologyBytes),
 				Categories: datatypes.JSON("[]"),
 				CreatedAt:  time.Now(),
@@ -278,14 +353,14 @@ func NewServer(db *gorm.DB) *server.MCPServer {
 			}
 
 			summary := ""
-			for i, n := range resolvedNodes {
+			for i, spec := range specs {
 				if i > 0 {
 					summary += " → "
 				}
-				if n.Links > 1 {
-					summary += fmt.Sprintf("%s[x%d]", n.Name, n.Links)
+				if spec.Node.Links > 1 {
+					summary += fmt.Sprintf("%s[x%d]", spec.Node.Name, spec.Node.Links)
 				} else {
-					summary += n.Name
+					summary += spec.Node.Name
 				}
 			}
 			return mcp.NewToolResultText(fmt.Sprintf(
